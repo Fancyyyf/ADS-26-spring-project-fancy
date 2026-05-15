@@ -59,8 +59,8 @@ def torch_causal_conv1d_update(
     # 保留最近 4 个 token 的状态
     kernel_size = 4
 
-    combined_states = torch.cat([conv_state, hidden_states], dim=-1)  # 抓新的token变为5
-    conv_state.copy_(combined_states[:, :, -kernel_size:])      # 更新窗口，保留最后4帧
+    combined_states = torch.cat([conv_state, hidden_states], dim=-1)
+    conv_state.copy_(combined_states[:, :, -kernel_size:])
 
     # 执行卷积计算
     # F.conv1d 要求 weight 形状为 (out_channels, in_channels/groups, kernel_size)

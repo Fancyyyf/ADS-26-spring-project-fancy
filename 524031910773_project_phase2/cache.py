@@ -94,6 +94,7 @@ class Qwen3_5DynamicCache:
             self.value_cache[layer_idx] = value_states
 
         else:
+
             # 从字典中尝试获取外部生成的 cache_position
             position = cache_kwargs.get("cache_position") if cache_kwargs else None
 
@@ -127,7 +128,7 @@ class Qwen3_5DynamicCache:
         2. 若该层缓存尚未初始化，返回 0。                                                                                                        
         3. 否则返回已缓存的序列长度。     
         """
-        if self.layer_types[layer_idx] != "full_attention":
+        if ( self.layer_types[layer_idx] != "full_attention" ):
             # 若为线性层，借用第一个fullattention层查阅长度
             layer_idx = self.transformer_layers[0]
 

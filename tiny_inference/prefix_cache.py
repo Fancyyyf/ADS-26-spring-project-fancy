@@ -96,9 +96,44 @@ class PrefixCache:
              - 返回 (matched_len, self._entries[best_key].clone())。
         """
         # ===== TODO: Prefix Cache - (START) =====
-        raise NotImplementedError(
-            "请根据提示实现 lookup()"
-        )
+        best_key = None
+        best_len = 0
+        
+        token_ids_tuple = tuple(token_ids)
+
+        for cached_tokens, cached_cache in self._entries.items():
+            cached_len = len(cached_tokens)
+            if cached_len > len(token_ids_tuple):  # 过长条目直接丢弃，因为卷积等状态无法复用或裁剪
+                continue
+            
+            # 判断是否为前缀
+            if cached_tokens == token_ids_tuple[:cached_len]:
+                if cached_len > best_len:
+                    best_len = cached_len
+                    best_key = cached_tokens
+
+        if best_key is None:
+            self.misses += 1
+            return 0, None
+        
+        # 命中时的截断逻辑：不能让 matched_len 刚好等于请求长度，至少要保留 1 个 token 供 forward 使用
+        matched_len = best_len
+        if matched_len == len(token_ids):
+            matched_len = len(token_ids) - 1
+            
+        if matched_len == 0:
+            # 截断后变成了0，也算作miss
+            self.misses += 1
+            return 0, None
+
+        # 命中处理：更新 LRU 顺序
+        self._entries.move_to_end(best_key)
+        
+        # 更新统计信息
+        self.hits += 1
+        self.hit_tokens += matched_len
+        
+        return matched_len, self._entries[best_key].clone()
         # ===== TODO: Prefix Cache - (END) =====
 
     # ---------- 插入 ----------
@@ -127,9 +162,21 @@ class PrefixCache:
         4. self._entries[key] = cache.clone()（新插入的条目天然位于队尾 = 最近使用）。
         """
         # ===== TODO: Prefix Cache - (START) =====
-        raise NotImplementedError(
-            "请根据提示实现 insert()"
-        )
+        token_ids_tuple = tuple(token_ids)
+
+        # 若 key 已在 self._entries 中：move_to_end(key) 后 return。
+        if token_ids_tuple in self._entries:
+            self._entries.move_to_end(token_ids_tuple)
+            return
+
+        # 若 len(self._entries) >= self._max_entries：popitem(last=False)，
+        # self.evictions += 1。
+        if len(self._entries) >= self._max_entries:
+            self._entries.popitem(last=False)   # 淘汰最久未使用的条目,位于队列最前端
+            self.evictions += 1
+        
+        # self._entries[key] = cache.clone()（新插入的条目天然位于队尾 = 最近使用）。
+        self._entries[token_ids_tuple] = cache.clone()
         # ===== TODO: Prefix Cache - (END) =====
 
     # ---------- 辅助 ----------

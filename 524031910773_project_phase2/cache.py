@@ -94,6 +94,7 @@ class Qwen3_5DynamicCache:
             self.value_cache[layer_idx] = value_states
 
         else:
+
             # 从字典中尝试获取外部生成的 cache_position
             position = cache_kwargs.get("cache_position") if cache_kwargs else None
 
@@ -127,7 +128,7 @@ class Qwen3_5DynamicCache:
         2. 若该层缓存尚未初始化，返回 0。                                                                                                        
         3. 否则返回已缓存的序列长度。     
         """
-        if self.layer_types[layer_idx] != "full_attention":
+        if ( self.layer_types[layer_idx] != "full_attention" ):
             # 若为线性层，借用第一个fullattention层查阅长度
             layer_idx = self.transformer_layers[0]
 
@@ -148,114 +149,6 @@ class Qwen3_5DynamicCache:
         past_seen_tokens = self.get_seq_length(layer_idx)
         kv_length = query_length + past_seen_tokens
         return kv_length, kv_offset
-
-    # ---------- Phase 3：Prefix Cache所需的深拷贝 ----------
-
-    def clone(self) -> "Qwen3_5DynamicCache":
-        """
-        Phase 3 Prefix Cache 专用：对当前缓存进行**深拷贝**，返回一个与原缓存完全独立的副本。
-
-        为什么需要深拷贝
-        ----------------
-        Prefix Cache把 prefill 结束时的缓存作为「可复用的快照」保存下来，供后续共享相同
-        前缀的请求复用。但后续请求在复用时会继续向缓存里 append 新的 K/V、原地更新
-        conv_state/recurrent_state —— 如果直接引用原对象，这些写入会**污染**快照，
-        导致下一次复用时拿到的不再是"prefill 刚结束时"的状态，而是夹杂着上一个请求
-        若干步 decode 的状态。
-
-        因此 PrefixCache.insert 必须先 clone 再存，PrefixCache.lookup 也必须 clone
-        后再交给 decoding 使用（这样同一快照可以被多次复用）。
-
-        实现提示
-        --------
-        1. 创建一个新的 Qwen3_5DynamicCache 实例（可利用 __new__ 避免重新走 __init__
-           所需的 config；将 layer_types / transformer_layers / last_linear_layer 拷过去即可）。
-        2. 对四个 list（key_cache / value_cache / conv_states / recurrent_states）
-           逐项处理：若元素为 None 则仍为 None；若为 Tensor 则使用 `.clone()` 得到独立副本。
-        3. 返回新实例。
-        """
-        # ===== TODO: Prefix Cache - (START) =====
-        new_cache = object.__new__(Qwen3_5DynamicCache)
-        
-        new_cache.layer_types = self.layer_types
-        new_cache.transformer_layers = self.transformer_layers
-        new_cache.last_linear_layer = self.last_linear_layer
-        
-        new_cache.key_cache = [t.clone() if t is not None else None for t in self.key_cache]
-        new_cache.value_cache = [t.clone() if t is not None else None for t in self.value_cache]
-        new_cache.conv_states = [t.clone() if t is not None else None for t in self.conv_states]
-        new_cache.recurrent_states = [t.clone() if t is not None else None for t in self.recurrent_states]
-        
-        return new_cache
-        # ===== TODO: Prefix Cache - (END) =====
-
-    # ---------- Phase 4：SSD Offloading 所需的序列化 / 反序列化 ----------
-
-    def to_cpu_state_dict(self) -> dict[str, Any]:
-        """
-        Phase 4 SSD Offloading 专用：把当前缓存的全部 tensor 拉到 CPU 并打包成一个
-        普通 dict，使其可以被 `torch.save` 落盘到 SSD。
-
-        为什么需要"拉到 CPU"
-        --------------------
-        Prefix Cache 的快照原本住在 GPU / MPS 上。若直接 `torch.save` GPU tensor，
-        落盘的文件里会嵌入 device 信息，跨机器、跨 GPU、或 GPU 不可用时加载会出错；
-        同时频繁往磁盘写 GPU 显存也没有意义（SSD 本身就是 CPU 侧设备）。标准做法是
-        在序列化前统一 `.cpu()`，反序列化后由调用方 `.to(device)` 搬回。
-
-        返回值结构（建议）
-        ------------------
-        返回一个扁平 dict，形如：
-          {
-            "layer_types": list[str],
-            "transformer_layers": list[int],
-            "last_linear_layer": int,
-            "key_cache":        list[Tensor|None],   # 全部 .cpu()
-            "value_cache":      list[Tensor|None],
-            "conv_states":      list[Tensor|None],
-            "recurrent_states": list[Tensor|None],
-          }
-
-        实现提示
-        --------
-        1. 四个 tensor list 逐项处理：None 保持 None，Tensor 调 `.detach().cpu()`。
-        2. 三个元信息字段（layer_types / transformer_layers / last_linear_layer）直接拷。
-        3. 不要 clone——反正 tensor 已离开 GPU，且 `torch.save` 会再做一次拷贝。
-        """
-        # ===== TODO: SSD Offload - cache 序列化 (START) =====
-        raise NotImplementedError(
-            "请根据提示实现 to_cpu_state_dict()"
-        )
-        # ===== TODO: SSD Offload - cache 序列化 (END) =====
-
-    @classmethod
-    def from_cpu_state_dict(
-        cls, state: dict[str, Any], device: torch.device
-    ) -> "Qwen3_5DynamicCache":
-        """
-        Phase 4 SSD Offloading 专用：从 `to_cpu_state_dict` 生成的 dict 恢复出一个
-        完整的 Qwen3_5DynamicCache 实例，并把所有 tensor 搬到目标 device 上。
-
-        注意
-        ----
-        - 这是 `@classmethod`，不走 `__init__`（__init__ 需要 config 参数，而落盘时
-          并没有保存 config）。请用 `object.__new__(cls)` 构造"空壳"，再把字段填上。
-          —— 这与 `clone()` 里"跳过 __init__"的技巧相同。
-        - 返回的 cache 应当与原 cache 在结构上完全一致：同样长度的四个 list，None
-          位置保持 None，Tensor 位置已在 `device` 上。
-
-        实现提示
-        --------
-        1. `obj = object.__new__(cls)`
-        2. 拷三个元信息：layer_types / transformer_layers / last_linear_layer。
-        3. 四个 tensor list 逐项处理：None→None；Tensor→`.to(device)`。
-        4. 返回 obj。
-        """
-        # ===== TODO: SSD Offload - cache 反序列化 (START) =====
-        raise NotImplementedError(
-            "请根据提示实现 from_cpu_state_dict()"
-        )
-        # ===== TODO: SSD Offload - cache 反序列化 (END) =====
 
     @property
     def has_previous_state(self) -> bool:

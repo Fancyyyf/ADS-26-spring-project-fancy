@@ -230,7 +230,16 @@ class ContextManager:
         4. 返回 messages。
         """
         # ===== TODO: Context - build_messages (START) =====
-        raise NotImplementedError("请根据提示实现 build_messages()")
+        messages = [{"role": "system", "content": self.system_prompt}]
+        
+        summary_msg = self._summary_message()
+        if summary_msg is not None:
+            messages.append(summary_msg)
+            
+        for turn in self.turns:
+            messages.extend(turn.to_messages())
+            
+        return messages
         # ===== TODO: Context - build_messages (END) =====
 
     # ====================================================================
@@ -288,7 +297,25 @@ class ContextManager:
         6. 维护统计：self.num_compressions += 1；self.turns_folded += n_fold。
         """
         # ===== TODO: Context - compress (START) =====
-        raise NotImplementedError("请根据提示实现 compress()")
+        n_fold = len(self.turns) - self.keep_recent_turns
+        if n_fold <= 0:
+            return
+
+        fold, self.turns = self.turns[:n_fold], self.turns[n_fold:]
+
+        material = ""
+        if self.summary:
+            material += f"已有摘要：\n{self.summary}\n\n"
+        
+        material += "需要并入摘要的对话：\n"
+        for turn in fold:
+            material += f"用户：{turn.user}\n助手：{turn.assistant}\n"
+            
+        prompt = _SUMMARY_INSTRUCTION + material
+        self.summary = summarize_fn(prompt).strip()
+        
+        self.num_compressions += 1
+        self.turns_folded += n_fold
         # ===== TODO: Context - compress (END) =====
 
     # ====================================================================
@@ -322,7 +349,9 @@ class ContextManager:
                json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
         """
         # ===== TODO: Context - save (START) =====
-        raise NotImplementedError("请根据提示实现 save()")
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
         # ===== TODO: Context - save (END) =====
 
     @classmethod
@@ -344,7 +373,24 @@ class ContextManager:
         4. 返回 cm。
         """
         # ===== TODO: Context - load (START) =====
-        raise NotImplementedError("请根据提示实现 load()")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        cm = cls(
+            tokenizer=tokenizer,
+            system_prompt=data.get("system_prompt", "You are a helpful assistant."),
+            max_context_tokens=data.get("max_context_tokens", 1024),
+            reserve_for_reply=data.get("reserve_for_reply", 256),
+            keep_recent_turns=data.get("keep_recent_turns", 3)
+        )
+        
+        cm.summary = data.get("summary")
+        cm.turns = [Turn(user=t["user"], assistant=t.get("assistant", "")) 
+                    for t in data.get("turns", [])]
+        cm.num_compressions = data.get("num_compressions", 0)
+        cm.turns_folded = data.get("turns_folded", 0)
+        
+        return cm
         # ===== TODO: Context - load (END) =====
 
 

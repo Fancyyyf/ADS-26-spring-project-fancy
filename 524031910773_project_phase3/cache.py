@@ -174,6 +174,7 @@ class Qwen3_5DynamicCache:
            逐项处理：若元素为 None 则仍为 None；若为 Tensor 则使用 `.clone()` 得到独立副本。
         3. 返回新实例。
         """
+        # ===== TODO: Prefix Cache - (START) =====
         new_cache = object.__new__(Qwen3_5DynamicCache)
         
         new_cache.layer_types = self.layer_types
@@ -186,89 +187,7 @@ class Qwen3_5DynamicCache:
         new_cache.recurrent_states = [t.clone() if t is not None else None for t in self.recurrent_states]
         
         return new_cache
-
-    # ---------- Phase 4：SSD Offloading 所需的序列化 / 反序列化 ----------
-
-    def to_cpu_state_dict(self) -> dict[str, Any]:
-        """
-        Phase 4 SSD Offloading 专用：把当前缓存的全部 tensor 拉到 CPU 并打包成一个
-        普通 dict，使其可以被 `torch.save` 落盘到 SSD。
-
-        为什么需要"拉到 CPU"
-        --------------------
-        Prefix Cache 的快照原本住在 GPU / MPS 上。若直接 `torch.save` GPU tensor，
-        落盘的文件里会嵌入 device 信息，跨机器、跨 GPU、或 GPU 不可用时加载会出错；
-        同时频繁往磁盘写 GPU 显存也没有意义（SSD 本身就是 CPU 侧设备）。标准做法是
-        在序列化前统一 `.cpu()`，反序列化后由调用方 `.to(device)` 搬回。
-
-        返回值结构（建议）
-        ------------------
-        返回一个扁平 dict，形如：
-          {
-            "layer_types": list[str],
-            "transformer_layers": list[int],
-            "last_linear_layer": int,
-            "key_cache":        list[Tensor|None],   # 全部 .cpu()
-            "value_cache":      list[Tensor|None],
-            "conv_states":      list[Tensor|None],
-            "recurrent_states": list[Tensor|None],
-          }
-
-        实现提示
-        --------
-        1. 四个 tensor list 逐项处理：None 保持 None，Tensor 调 `.detach().cpu()`。
-        2. 三个元信息字段（layer_types / transformer_layers / last_linear_layer）直接拷。
-        3. 不要 clone——反正 tensor 已离开 GPU，且 `torch.save` 会再做一次拷贝。
-        """
-        # ===== TODO: SSD Offload - cache 序列化 (START) =====
-        return {
-            "layer_types": self.layer_types,
-            "transformer_layers": self.transformer_layers,
-            "last_linear_layer": self.last_linear_layer,
-            "key_cache": [t.detach().cpu() if t is not None else None for t in self.key_cache],
-            "value_cache": [t.detach().cpu() if t is not None else None for t in self.value_cache],
-            "conv_states": [t.detach().cpu() if t is not None else None for t in self.conv_states],
-            "recurrent_states": [t.detach().cpu() if t is not None else None for t in self.recurrent_states],
-        }
-        # ===== TODO: SSD Offload - cache 序列化 (END) =====
-
-    @classmethod
-    def from_cpu_state_dict(
-        cls, state: dict[str, Any], device: torch.device
-    ) -> "Qwen3_5DynamicCache":
-        """
-        Phase 4 SSD Offloading 专用：从 `to_cpu_state_dict` 生成的 dict 恢复出一个
-        完整的 Qwen3_5DynamicCache 实例，并把所有 tensor 搬到目标 device 上。
-
-        注意
-        ----
-        - 这是 `@classmethod`，不走 `__init__`（__init__ 需要 config 参数，而落盘时
-          并没有保存 config）。请用 `object.__new__(cls)` 构造"空壳"，再把字段填上。
-          —— 这与 `clone()` 里"跳过 __init__"的技巧相同。
-        - 返回的 cache 应当与原 cache 在结构上完全一致：同样长度的四个 list，None
-          位置保持 None，Tensor 位置已在 `device` 上。
-
-        实现提示
-        --------
-        1. `obj = object.__new__(cls)`
-        2. 拷三个元信息：layer_types / transformer_layers / last_linear_layer。
-        3. 四个 tensor list 逐项处理：None→None；Tensor→`.to(device)`。
-        4. 返回 obj。
-        """
-        # ===== TODO: SSD Offload - cache 反序列化 (START) =====
-        obj = object.__new__(cls)
-        
-        obj.layer_types = state["layer_types"]
-        obj.transformer_layers = state["transformer_layers"]
-        obj.last_linear_layer = state["last_linear_layer"]
-        
-        obj.key_cache = [t.to(device) if t is not None else None for t in state["key_cache"]]
-        obj.value_cache = [t.to(device) if t is not None else None for t in state["value_cache"]]
-        obj.conv_states = [t.to(device) if t is not None else None for t in state["conv_states"]]
-        obj.recurrent_states = [t.to(device) if t is not None else None for t in state["recurrent_states"]]
-        
-        return obj
-        # ===== TODO: SSD Offload - cache 反序列化 (END) =====
+        # ===== TODO: Prefix Cache - (END) =====
 
     @property
     def has_previous_state(self) -> bool:
